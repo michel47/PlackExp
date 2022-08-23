@@ -29,7 +29,7 @@ my $pkb = $keys::pkb; printf "pkb: %s\n",$pkb;
 my $dhsecret = &DHSecret($sku,$pkb);
 printf"dhsecret: %s\n",&encode_mbase64($dhsecret);
 
-my $obj = { fprint($msg,$userkey->{public}) };
+my $obj = { fprint($msg,$userkey->{public}, broker => $keys::skb) };
 printf"--- # footprint: %s---\n",Dump($obj);
 
 is $obj->{fp}, 'f1147ae1-c931-fb5a-e48f-d39a41eab570', "testing fprint for $pku";
