@@ -159,6 +159,40 @@ sub recover($) {
    my ($uuid,$secret) = @_;
 
 }
+
+# -----------------------------------------------
+sub ecKDF {
+  my $intent = "create private key with scrypt key derivation function (KDF)";
+  use Crypt::ScryptKDF qw(scrypt_raw);
+  my ($pass,$salt,@args) = @_;
+  my $opt = { @args };
+  my $unsecure = $opt->{unsecure};
+  my $N = ($unsecure == 1) ? 2 : $opt->{N} || 1<<18; # CPU/memory cost (has to be power of 2 and >1); DE
+  my $r = $opt->{r} || 8; # block size parameter; DEFAULT: 8
+  my $p = $opt->{p} || 2; # parallelization parameter; DEFAULT: 1
+  my $len = $opt->{len} || 32; # length of derived key (in bytes); DEFAULT: 32
+  # key derivation (key strengthening) 
+  # see also: https://www.tarsnap.com/scrypt/scrypt.pdf
+  my $dkey = scrypt_raw($pass,$salt,$N, $r, $p, $len);
+  my $curve = 'secp256k1';
+  use Crypt::PK::ECC qw();
+  my $sk  = Crypt::PK::ECC->new();
+  my $priv = $sk->import_key_raw($dkey, $curve);
+  my $privkey = $priv->export_key_raw('private_compressed');
+  my $pubkey = $priv->export_key_raw('public_compressed');
+  my $ski = &encode_mbase58($privkey);
+  my $pki = &encode_mbase58($pubkey);
+  my $keypair = {
+    pass => $pass,
+    public => $pki,
+    private => $ski,
+    salt => &encode_mbase64($salt),
+  };
+  return $keypair;
+  
+}
+# -----------------------------------------------
+
 sub xencKDF($$$$) { # Ex. my $xku = &xencKDF($sko,$pku,$dpk,$mutaddr);
   use basic qw(decode_mbase58 encode_mbase58);
   my ($ownKey,$pubKey,$seckey,$URI) = @_;
@@ -185,7 +219,7 @@ sub xdecKDF($$$$) { # Ex. my $dpk = &xencKDF($sku,$pko,$xku,$mutaddr);
 }
 
 # -----------------------------------------------
-sub getKeyPair(@) {
+sub getKeyPair(@) { # Ex. my $kpair = &getKeyPair($seed,salt16);
    #y $intent qq'compute keypair from a uuid';
    my $args = { @_ };
    #printf "--- # args: %s---\n",YAML::XS::Dump($args);
@@ -322,7 +356,7 @@ sub DHSecret { # Ex my $secret = DHSecret($sku,$pku);
   return wantarray ? %{$obj} : $secret_raw;
 }
 
-sub keyWrap($$$) { # Ex. my $cypher = &keyWrap($seckey,$pkr,$nonce,$intent);
+sub keyWrap($$$@) { # Ex. my $cypher = &keyWrap($seckey,$pkr,$nonce,$intent);
   my $curve = 'secp256k1';
   use Crypt::PK::ECC qw();
   my $sk = Crypt::PK::ECC->new();
@@ -336,21 +370,38 @@ sub keyWrap($$$) { # Ex. my $cypher = &keyWrap($seckey,$pkr,$nonce,$intent);
   my $dhsecret = $priv->shared_secret($pub);
 
   my $pub = $sk->export_key_raw('public_compressed');
-  printf "pubkey: %s\n",&encode_mbase58($pub);
+  #printf "pubkey: %s\n",&encode_mbase58($pub);
   my $len = length($clear_raw);
   my $dkey = substr(&khash('SHA256',$intent,$dhsecret),0,$len);
   my $cipher = xorPlain($dkey,$clear_raw);
   if (1) {
     printf "clear : %s\n",&encode_mbase16($clear_raw);
-    printf "pub : %s\n",&encode_mbase16($pub);
+    printf "pubkey: %s\n",&encode_mbase58($pub);
     printf "dhsec : %s\n",&encode_mbase16($dhsecret);
     printf "dkey  : %s\n",&encode_mbase16($dkey);
     printf "cipher: %s\n",&encode_mbase16($cipher);
   }
   my $cypher64 = &encode_mbase64($pub.$cipher);
-  return $cypher64;
+  if (wantarray) {
+    my $obj = {
+      clear_raw => $clear_raw,
+      clear58 => &encode_mbase58($clear_raw),
+      privkey => &encode_mbase58($priv_raw),
+      pubkey => &encode_mbase58($pub),
+      secret64 => &encode_mbase64($dhsecret),
+      secret_raw => $dhsecret,
+      dkey => &encode_mbase16($dkey),
+      cipher64 => &encode_mbase64($cipher),
+      cipher_raw => $cipher,
+      cypher64 => $cypher64,
+      len => $len
+    };
+    return %$obj ;
+  } else {
+    return $cypher64;
+  }
 }
-sub keyUnwrap($$) { # Ex. my $seckey = &keyUnwrap($cypher,$skr,$intent);
+sub keyUnwrap($$@) { # Ex. my $seckey = &keyUnwrap($cypher,$skr,$intent);
   my $curve = 'secp256k1';
   use Crypt::PK::ECC qw();
   my $sk = Crypt::PK::ECC->new();
@@ -368,13 +419,29 @@ sub keyUnwrap($$) { # Ex. my $seckey = &keyUnwrap($cypher,$skr,$intent);
   my $plain_raw = xorPlain($dkey,$cipher);
   if (1) {
     printf "cipher: %s\n",&encode_mbase16($cipher);
-    printf "pub : %s\n",&encode_mbase16($pub_raw);
+    printf "pubkey: %s\n",&encode_mbase58($pub_raw);
     printf "dhsec : %s\n",&encode_mbase16($dhsecret);
     printf "dkey  : %s\n",&encode_mbase16($dkey);
     printf "plain : %s\n",&encode_mbase16($plain_raw);
   }
-  my $plain = &encode_mbase58($plain_raw);
-  return $plain
+  my $plain58 = &encode_mbase58($plain_raw);
+  if (wantarray) {
+    my $obj = {
+      privkey => &encode_mbase58($priv_raw),
+      pubkey => &encode_mbase58($pub_raw),
+      secret64 => &encode_mbase64($dhsecret),
+      secret_raw => $dhsecret,
+      dkey => &encode_mbase16($dkey),
+      cipher64 => &encode_mbase64($cipher),
+      cipher_raw => $cipher,
+      plain58 => $plain58,
+      plaintext => $plain_raw,
+      len => $len
+    };
+    return %$obj ;
+  } else {
+    return $plain58;
+  }
 }
 
 sub ecEncrypt($$) {
@@ -534,7 +601,7 @@ sub swissnumber($@) {
    printf "swissnumber.uuid: \e[32m%s\e[0m\n",$uuid;
    my $SNobj = {
     uuid => $uuid,
-    SSN => &encode_base64($SSN),
+    secret => &encode_base64($SSN,''),
     key => $key,
     URI => $URI,
     value => $sn_raw,
