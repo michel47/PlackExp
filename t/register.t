@@ -17,11 +17,12 @@ my $msg = "Testing Registration";
 my $data = pack('H*','015500').&varint(length($msg)).$msg;
 my $zmh = &encode_mbase58($data);
 my $hash = khash('SHA256',$data,'private key seed');
-my $nonce = substr($hash,16);
+my $nonce_raw = substr($hash,16);
+my $nonce = &encode_uuid($nonce_raw);
 
 printf "url: https://gateway.ipfs.io/ipfs/f%s\n",unpack'H*',$data;
 printf "zmh: %s\n",$zmh;
-printf "nonce: %s\n",&encode_uuid($nonce);
+printf "nonce: %s\n",$nonce;
 
 if (0) {
 my $pair = { getPrivateKey($nonce,salt => substr(unpack('H*',$hash),-5,4)) };

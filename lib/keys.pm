@@ -39,9 +39,9 @@ use Bitcoin::Mnemonic qw(entropy_to_bip39_mnemonic bip39_mnemonic_to_entropy gen
 use basic qw(seclog khash encode_mbase64 encode_mbase16 encode_mbase58 decode_mbase64);
 
 our $appid = $ENV{APP_SECRETID} || '59d95bef-71f3-44e9-ae61-78dab20711d8';
-my $app = { &getKeyPair($appid,'salt' => substr($appid,-5,4)) };
+my $app = { &getKeyPair($appid,'salt' => pack'H4',substr($appid,-5,4)) };
 our $brokerid = $ENV{BROKER_SECRET} || '989e126c-4997-432e-b73b-57320a4e1c32';
-my $broker = { &getKeyPair($brokerid,'salt' => substr($brokerid,-5,4)) };
+my $broker = { &getKeyPair($brokerid,'salt' => pack'H4',substr($brokerid,-5,4)) };
 
 my $pka = $app->{public};
 printf "pka: %s\n",$pka;
@@ -67,7 +67,7 @@ sub getShard { # Ex. my $nid = &getShard($token);
 sub getuuid($) {
   use Data::UUID;
   my $seed = shift;
-  my $oid = sprintf'uid.seed.%s',$seed;
+  my $oid = sprintf'oid.seed.%s',$seed;
   my $ug = Data::UUID->new;
   my $uuidv5 = $ug->create_from_name_str(NameSpace_OID, "$oid");
   return lc $uuidv5
@@ -232,15 +232,13 @@ sub getKeyPair(@) { # Ex. my $kpair = &getKeyPair($seed,salt16);
    }
    #my $pkd = $args->{devid};
 
-   my $seed16 = $seed; $seed16 =~ tr/-//d;
-   #debug "seed16: f%s (%dc)\n",$seed16, length($seed16);
-   my $seed_raw = pack'H*',$seed16;
+   my $seed_raw = &decode_mbase($seed);
    #y $seed58 = &encode_mbase58($seed_raw);
    my $seed64 = &encode_base64($seed_raw,'');
-   debug "seed: %s (%dB)\n",$seed64, length($seed_raw);
+   printf "seed: %s (%dB)\n",$seed64, length($seed_raw);
    my $ns = sprintf "seed %d\0", length($seed_raw);
    my $khash = substr(&khash('SHA256',$ns,$seed_raw),0,240/8);
-   my $salt = pack('H4',$args->{salt}) || random(2);
+   my $salt = $args->{salt} || random(2);
    #debug "khash: %s\n",unpack'H*',$khash;
    seclog "salt: %s\n",unpack'H*',$salt;
    my $sku_raw = $khash.$salt;
@@ -273,6 +271,16 @@ sub getPrivateKey(@) {
    my $pair = { &getKeyPair(@_) };
    #printf "--- # pair: %s---\n",Dump($pair);
    return (wantarray) ? %$pair : $pair->{private};
+}
+# -----------------------------------------------
+sub is_private {
+   my $curve = 'secp256k1';
+   use Crypt::PK::ECC;
+   my $pk = Crypt::PK::ECC->new();
+   my $secretkey = shift;
+   my $secret_raw = &decode_mbase($secretkey);
+   my $key = $pk->import_key_raw($secret_raw, $curve);
+   return $key->is_private;
 }
 # -----------------------------------------------
 sub ECC {
@@ -355,6 +363,7 @@ sub DHSecret { # Ex my $secret = DHSecret($sku,$pku);
   };
   return wantarray ? %{$obj} : $secret_raw;
 }
+
 
 sub keyWrap($$$@) { # Ex. my $cypher = &keyWrap($seckey,$pkr,$nonce,$intent);
   my $curve = 'secp256k1';
@@ -483,6 +492,52 @@ sub ecDecrypt($$) {
      debug "plain: %s\n",$plain;
    }
    return $plain;
+}
+
+sub ecSign($$@) {
+  my $curve = 'secp256k1';
+  use Crypt::PK::ECC qw();
+  my ($priv,$msg,$algo) = (@_,'SHA1');
+  my $priv_raw = &decode_mbase($priv);
+
+  my $pk = Crypt::PK::ECC->new();
+  my $priv = $pk->import_key_raw($priv_raw, $curve);
+  my $pub_raw = $pk->export_key_raw('public_compressed');
+  debug "pubkey: %s\n",&encode_mbase58($pub_raw);
+  my $sig;
+  if ($algo eq 'hash' || $algo eq 'none' || $algo eq 'ident' || ! defined $algo) {
+    $sig = $priv->sign_hash($msg);
+  } else {
+    $sig = $priv->sign_message($msg,$algo);
+  }
+  my $hash=&khash($algo,$msg);
+  printf "hash: %s\n",encode_mbase16($hash);
+
+  printf "sig1: %s (%uB)\n",encode_mbase64($sig),length($sig);
+  my $sig2 = $priv->sign_hash($hash);
+  printf "sig2: %s (%uB)\n",encode_mbase64($sig2),length($sig2);
+  my $sig3 = $priv->sign_message_rfc7518($msg,$algo);
+  printf "sig3: %s (%uB)\n",encode_mbase64($sig3),length($sig3);
+  my $sig4 = $priv->sign_hash_rfc7518($hash);
+  printf "sig4: %s (%uB)\n",encode_mbase64($sig4),length($sig4);
+
+  my $sig64 = encode_mbase64($sig);
+  debug "sig: %s:%s\n",($algo||'ident'),$sig64;
+  return $sig64;
+}
+
+sub ecVerify($$@) {
+  my $curve = 'secp256k1';
+  use Crypt::PK::ECC qw();
+  my ($key58,$sig64,$msg,$algo) = (@_,'SHA1');
+   my $pk = Crypt::PK::ECC->new();
+   my $pub_raw = &decode_mbase($key58);
+   my $sig = &decode_mbase($sig64);
+
+   my $pub = $pk->import_key_raw($pub_raw, $curve);
+   my $valid = $pub->verify_message($sig, $msg,$algo)
+       or warn sprintf"INVALID signature: %s; msg=%s",$sig64,$msg;
+   return $valid;
 }
 
 

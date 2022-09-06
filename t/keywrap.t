@@ -11,7 +11,7 @@ my $priv58 = 'ZaW1Nu8ZcFXDsbVmcTEGNHVdQkJeGxzzC5yesWnA5EvFH';
 my $pub58 = 'ZZ3QXZd3a6JL2s1en2Kq5SeY9ThU9gzQKG4a2o8eqRsLh';
 
 my $devid = '425acbb8-2315-49f3-9ba2-2f24bbbf48b2';
-my $device = { &getKeyPair($devid, 'salt' => substr($devid,-5,4)) };
+my $device = { &getKeyPair($devid, 'salt' => pack'H4',substr($devid,-5,4)) };
 printf "devid: %s (pkd: %s)\n",$devid,$device->{public};
 
 my $nonce = random(32);
